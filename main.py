@@ -1,6 +1,7 @@
 import collections
 import datetime
 import html as htmllib
+import math
 import os
 import re
 import subprocess
@@ -27,15 +28,21 @@ AVG_NOTE = "「持滿N年平均值」＝保單年度N及之後所有數字的平
 PCT = re.compile(r"(\d+(?:\.\d+)?)\s*%")
 TITLE = re.compile(r"(\d{4})\s*報告年度的\s*([^。，,；;]{0,30}?)\s*(之分紅實現率|總現金價值比率)")
 YEAR = re.compile(r"第\s*(\d+)\s*個保單年度\s*(\+?)\s*[（(]\s*於(.+?)開始生\s*效之保單\s*[）)]")
-NAVY, GREY, DARK = "1F3864", "8C8C8C", "262626"
-SEP_FILL = PatternFill("solid", fgColor="EDEDED")
-GREEN_FILL = PatternFill("solid", fgColor="C6EFCE")
-RED_FILL = PatternFill("solid", fgColor="FFC7CE")
-THIN = Side(style="thin", color="BFBFBF")
+BLUE, GREY, LIGHT, DARK = "1F4E79", "7F7F7F", "BFBFBF", "262626"
+PALETTE = ["4472C4", "548235", "C55A11", "7030A0", "008080", "806000"]
+CAT_COLORS = {}
+HEAD_FILL = PatternFill("solid", fgColor=BLUE)
+INFO_FILL = PatternFill("solid", fgColor="F2F5FA")
+SEP_FILL = PatternFill("solid", fgColor="DCE6F1")
+GREEN_FILL = PatternFill("solid", fgColor="E2EFDA")
+RED_FILL = PatternFill("solid", fgColor="FCE4E4")
+GREEN_TEXT, RED_TEXT = "548235", "C00000"
+THIN = Side(style="thin", color="D9D9D9")
 BOX = Border(top=THIN, bottom=THIN, left=THIN, right=THIN)
+SEP_BORDER = Border(bottom=Side(style="thin", color="8EA9DB"))
 CENTER = Alignment(horizontal="center", vertical="center", wrap_text=True)
-ROW_HEIGHT = 30
-HEAD_ROW = 5
+ROW_HEIGHT = 20
+HEAD_ROW = 3
 XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 
@@ -152,11 +159,33 @@ def hold_label(i, ycols):
     return f"持滿{n}年平均值"
 
 
-def head_cell(c):
-    c.font = Font(bold=True, color="FFFFFF", size=10)
-    c.fill = PatternFill("solid", fgColor=NAVY)
+def text_width(s):
+    return sum(2 if ord(ch) > 0x2E7F else 1 for ch in s)
+
+
+def head_cell(c, size=9):
+    c.font = Font(bold=True, color="FFFFFF", size=size)
+    c.fill = HEAD_FILL
     c.alignment = CENTER
     c.border = BOX
+
+
+def banner(ws, text, ncol, size, height):
+    c = ws.cell(row=1, column=1, value=text)
+    c.font = Font(bold=True, size=size, color="FFFFFF")
+    c.fill = HEAD_FILL
+    c.alignment = Alignment(vertical="center", indent=1)
+    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=ncol)
+    ws.row_dimensions[1].height = height
+
+
+def info_row(ws, text, ncol, height):
+    c = ws.cell(row=2, column=1, value=text)
+    c.font = Font(size=8, color=GREY)
+    c.fill = INFO_FILL
+    c.alignment = Alignment(vertical="center", wrap_text=True, indent=1)
+    ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=ncol)
+    ws.row_dimensions[2].height = height
 
 
 def write_averages(ws, start, label, rows, ycols, ysubs, nlead):
@@ -171,27 +200,27 @@ def write_averages(ws, start, label, rows, ycols, ysubs, nlead):
 
     def line(r, title, vals):
         c = ws.cell(row=r, column=nlead, value=title)
-        c.font = Font(bold=True, size=10, color=DARK)
+        c.font = Font(bold=True, size=9, color=DARK)
         c.alignment = CENTER
         c.border = BOX
         for j, v in enumerate(vals):
             c = ws.cell(row=r, column=nlead + 1 + j, value=v if v is not None else "/")
-            c.font = Font(bold=True, size=10)
+            c.font = Font(bold=True, size=9, color=DARK if v is not None else LIGHT)
             c.alignment = CENTER
             c.border = BOX
             if v is not None:
                 c.number_format = "0.00%"
-        ws.row_dimensions[r].height = 24
+        ws.row_dimensions[r].height = 22
 
     def heading(r, title, heads):
         head_cell(ws.cell(row=r, column=nlead, value=title))
         for j, h in enumerate(heads):
-            head_cell(ws.cell(row=r, column=nlead + 1 + j, value=h))
-        ws.row_dimensions[r].height = 40
+            head_cell(ws.cell(row=r, column=nlead + 1 + j, value=h), 8)
+        ws.row_dimensions[r].height = 36
 
     r = start
     c = ws.cell(row=r, column=nlead, value="平均值摘要")
-    c.font = Font(bold=True, size=11, color=NAVY)
+    c.font = Font(bold=True, size=11, color=BLUE)
     c.alignment = Alignment(vertical="center")
     ws.row_dimensions[r].height = 24
     r += 1
@@ -205,49 +234,50 @@ def write_averages(ws, start, label, rows, ycols, ysubs, nlead):
     line(r, all_name, averages(rows, ycols))
     r += 1
     c = ws.cell(row=r, column=nlead, value=AVG_NOTE)
-    c.font = Font(size=9, color=GREY)
+    c.font = Font(size=8, color=GREY)
     c.alignment = Alignment(vertical="center", wrap_text=True)
     ws.merge_cells(start_row=r, start_column=nlead, end_row=r, end_column=last)
     ws.row_dimensions[r].height = 30
 
 
 def write_sheet(ws, label, rows, ycols, ysubs, year, today):
-    cols = [("产品名称", 34, "name"), ("产品种类", 14, "cat")]
+    cols = [("产品名称", 40, "name"), ("产品种类", 14, "cat")]
     if len(set(r["kind"] for r in rows)) > 1:
         cols.append(("红利类型", 18, "kind"))
     heads = [c[0] for c in cols] + [(k.replace("保單年度", "保单年度") + "\n" + ysubs.get(k, "")).strip() for k in ycols]
-    widths = [c[1] for c in cols] + [13] * len(ycols)
-    separate = len(rows) > len(set(r["name"] for r in rows))
-    tops = [(f"永明{label}（報告年度 {year}）", Font(bold=True, size=14, color=NAVY), 28),
-            (DEFS[label], Font(size=10), 30),
-            (LEGEND, Font(size=9, color=GREY), 18),
-            (f"資料來源：香港永明金融網站（報告年度 {year}）｜更新日期：{today}", Font(size=9, color=GREY), 18)]
-    for i, (s, font, height) in enumerate(tops, 1):
-        c = ws.cell(row=i, column=1, value=s)
-        c.font = font
-        c.alignment = Alignment(vertical="center", wrap_text=True)
-        ws.merge_cells(start_row=i, start_column=1, end_row=i, end_column=len(heads))
-        ws.row_dimensions[i].height = height
+    widths = [c[1] for c in cols] + [10] * len(ycols)
+    n = len(heads)
+    banner(ws, f"永明{label}（報告年度 {year}）", n, 12, 30)
+    info_row(ws, "\n".join([DEFS[label], LEGEND,
+                            f"資料來源：香港永明金融網站（報告年度 {year}）｜更新日期：{today}"]), n, 50)
     for i, (h, w) in enumerate(zip(heads, widths), 1):
         head_cell(ws.cell(row=HEAD_ROW, column=i, value=h))
         ws.column_dimensions[get_column_letter(i)].width = w
-    ws.row_dimensions[HEAD_ROW].height = 40
+    ws.row_dimensions[HEAD_ROW].height = 48
     ri, prev = HEAD_ROW, None
     for r in rows:
         if r["name"] != prev:
-            if prev is not None and separate:
+            if prev is not None:
                 ri += 1
-                ws.cell(row=ri, column=1).fill = SEP_FILL
-                ws.merge_cells(start_row=ri, start_column=1, end_row=ri, end_column=len(heads))
-                ws.row_dimensions[ri].height = 9
+                for ci in range(1, n + 1):
+                    c = ws.cell(row=ri, column=ci)
+                    c.fill = SEP_FILL
+                    c.border = SEP_BORDER
+                ws.row_dimensions[ri].height = 4
             prev = r["name"]
         ri += 1
         for ci, (_, w, key) in enumerate(cols, 1):
             c = ws.cell(row=ri, column=ci, value=r[key])
-            c.font = Font(bold=key == "name", size=10, color=DARK if key == "name" else "000000")
-            c.alignment = Alignment(horizontal="left" if key == "name" else "center",
-                                    vertical="center", wrap_text=True)
             c.border = BOX
+            if key == "name":
+                c.font = Font(bold=True, size=9, color=DARK)
+                c.alignment = Alignment(horizontal="left", vertical="center", wrap_text=True, indent=1)
+            elif key == "cat":
+                c.font = Font(size=9, color=CAT_COLORS.get(r[key], DARK))
+                c.alignment = CENTER
+            else:
+                c.font = Font(size=9, color=DARK)
+                c.alignment = CENTER
         for j, k in enumerate(ycols):
             v = r["vals"].get(k, "/")
             c = ws.cell(row=ri, column=len(cols) + 1 + j, value=v)
@@ -257,19 +287,21 @@ def write_sheet(ws, label, rows, ycols, ysubs, year, today):
                 c.number_format = pct_format(v)
                 if v >= 0.9995:
                     c.fill = GREEN_FILL
-                    c.font = Font(size=10, color="006100")
+                    c.font = Font(size=9, color=GREEN_TEXT)
                 elif v < 0.7995:
                     c.fill = RED_FILL
-                    c.font = Font(size=10, bold=True, color="9C0006")
+                    c.font = Font(size=9, color=RED_TEXT)
                 else:
-                    c.font = Font(size=10)
+                    c.font = Font(size=9, color=DARK)
             else:
-                c.font = Font(size=10, color=GREY)
-        ws.row_dimensions[ri].height = ROW_HEIGHT
+                c.font = Font(size=9, color=LIGHT)
+        lines = max(1, math.ceil(text_width(r["name"]) / 40))
+        ws.row_dimensions[ri].height = max(ROW_HEIGHT, 13 * lines + 7)
     ws.freeze_panes = f"B{HEAD_ROW + 1}"
-    ws.auto_filter.ref = f"A{HEAD_ROW}:{get_column_letter(len(heads))}{max(ri, HEAD_ROW + 1)}"
+    ws.auto_filter.ref = f"A{HEAD_ROW}:{get_column_letter(n)}{max(ri, HEAD_ROW + 1)}"
     write_averages(ws, ri + 2, label, rows, ycols, ysubs, len(cols))
     ws.sheet_view.showGridLines = False
+    ws.sheet_properties.tabColor = BLUE
     ws.page_setup.orientation = "landscape"
     ws.sheet_properties.pageSetUpPr = PageSetupProperties(fitToPage=True)
     ws.page_setup.fitToWidth = 1
@@ -280,33 +312,36 @@ def write_sheet(ws, label, rows, ycols, ysubs, year, today):
 def write_overview(ws, sheets, year, today):
     ncol = 6
     ws.sheet_view.showGridLines = False
-    for i, w in enumerate([30, 16, 12, 16, 16, 20], 1):
+    ws.sheet_properties.tabColor = "FFC000"
+    for i, w in enumerate([40, 20, 20, 20, 20, 20], 1):
         ws.column_dimensions[get_column_letter(i)].width = w
 
-    def text(r, s, bold=False, size=10, height=20, color="000000"):
-        ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=ncol)
+    def section(r, s):
         c = ws.cell(row=r, column=1, value=s)
-        c.font = Font(bold=bold, size=size, color=color)
-        c.alignment = Alignment(vertical="center", wrap_text=True)
-        ws.row_dimensions[r].height = height
+        c.font = Font(bold=True, size=11, color=BLUE)
+        c.alignment = Alignment(vertical="bottom")
+        ws.row_dimensions[r].height = 22
 
-    def body(r, i, v, fmt="0.00%"):
+    def body(r, i, v, fmt="0.00%", color=DARK):
         c = ws.cell(row=r, column=i, value=v if v is not None else "/")
         c.border = BOX
-        c.font = Font(size=10, bold=i == 1)
-        c.alignment = Alignment(horizontal="left" if i == 1 else "center", vertical="center")
+        c.font = Font(size=10, bold=i == 1, color=color)
+        c.alignment = Alignment(horizontal="left" if i == 1 else "center", vertical="center",
+                                indent=1 if i == 1 else 0)
         if isinstance(v, float):
             c.number_format = fmt
         ws.row_dimensions[r].height = 22
         return c
 
-    text(1, f"永明分紅表現概覽（報告年度 {year}）", True, 14, 28, NAVY)
-    text(2, f"資料來源：香港永明金融網站｜更新日期：{today}", color=GREY)
-    text(4, "資料概況", True, 11, 22, NAVY)
+    banner(ws, f"永明分紅表現概覽（報告年度 {year}）", ncol, 14, 34)
+    info_row(ws, f"資料來源：香港永明金融網站｜更新日期：{today}", ncol, 20)
+    ws.cell(row=2, column=1).font = Font(size=9, color=GREY)
+    ws.row_dimensions[3].height = 10
+    section(4, "資料概況")
     r = 5
     for i, h in enumerate(["工作表", "產品數", "行數", "有數字的格數", "整體平均值", "低於 80% 的比例"], 1):
-        head_cell(ws.cell(row=r, column=i, value=h))
-    ws.row_dimensions[r].height = 30
+        head_cell(ws.cell(row=r, column=i, value=h), 10)
+    ws.row_dimensions[r].height = 22
     for label, rows in sheets:
         r += 1
         nums = numbers(rows)
@@ -314,33 +349,36 @@ def write_overview(ws, sheets, year, today):
         name = f"{year}{label}"
         line = [name, len(set(x["name"] for x in rows)), len(rows), len(nums), mean(nums), low]
         for i, v in enumerate(line, 1):
-            c = body(r, i, v, "0.0%" if i == 6 else "0.00%")
+            body(r, i, v, "0.0%" if i == 6 else "0.00%")
         link = ws.cell(row=r, column=1)
         link.hyperlink = Hyperlink(ref="", location=f"'{name}'!A1", display=name)
         link.value = name
-        link.font = Font(size=10, bold=True, color="0563C1", underline="single")
-    r += 2
-    cats = list(dict.fromkeys(x["cat"] for _, rows in sheets for x in rows if x["cat"]))
-    if cats:
-        text(r, "按產品種類的整體平均值", True, 11, 22, NAVY)
+        link.font = Font(size=10, bold=True, color=BLUE, underline="single")
+    r += 1
+    ws.row_dimensions[r].height = 10
+    r += 1
+    if CAT_COLORS:
+        section(r, "按產品種類的整體平均值")
         r += 1
         for i, h in enumerate(["產品種類"] + [label for label, _ in sheets], 1):
-            head_cell(ws.cell(row=r, column=i, value=h))
-        ws.row_dimensions[r].height = 30
-        for cat in cats:
+            head_cell(ws.cell(row=r, column=i, value=h), 10)
+        ws.row_dimensions[r].height = 22
+        for cat, color in CAT_COLORS.items():
             r += 1
             line = [cat] + [mean(numbers([x for x in rows if x["cat"] == cat])) for _, rows in sheets]
             for i, v in enumerate(line, 1):
-                body(r, i, v)
-        r += 2
-    text(r, "顏色說明", True, 11, 22, NAVY)
-    samples = [(1.0, GREEN_FILL, "006100", "100% 或以上：與銷售時的說明一致或更好"),
-               (0.79, RED_FILL, "9C0006", "低於 80%：明顯低於銷售時的說明"),
-               ("/", None, GREY, "沒有數字：網站顯示「已停售」「尚未推出」或「不適用」")]
+                body(r, i, v, color=color if i == 1 else DARK)
+        r += 1
+        ws.row_dimensions[r].height = 10
+        r += 1
+    section(r, "顏色說明")
+    samples = [(1.0, GREEN_FILL, GREEN_TEXT, "100% 或以上：與銷售時的說明一致或更好"),
+               (0.79, RED_FILL, RED_TEXT, "低於 80%：明顯低於銷售時的說明"),
+               ("/", None, LIGHT, "沒有數字：網站顯示「已停售」「尚未推出」或「不適用」")]
     for v, fill, color, desc in samples:
         r += 1
         c = ws.cell(row=r, column=1, value=v)
-        c.font = Font(size=10, bold=True, color=color)
+        c.font = Font(size=10, color=color)
         c.alignment = CENTER
         c.border = BOX
         if fill:
@@ -348,12 +386,14 @@ def write_overview(ws, sheets, year, today):
         if isinstance(v, float):
             c.number_format = "0%"
         d = ws.cell(row=r, column=2, value=desc)
-        d.font = Font(size=10)
-        d.alignment = Alignment(vertical="center")
+        d.font = Font(size=10, color=DARK)
+        d.alignment = Alignment(vertical="center", indent=1)
         ws.merge_cells(start_row=r, start_column=2, end_row=r, end_column=ncol)
         ws.row_dimensions[r].height = 22
-    r += 2
-    text(r, "使用提示", True, 11, 22, NAVY)
+    r += 1
+    ws.row_dimensions[r].height = 10
+    r += 1
+    section(r, "使用提示")
     tips = [
         "・點上方「資料概況」的工作表名稱，可直接跳到該工作表。",
         f"・每個工作表第 {HEAD_ROW} 行有篩選箭嘴，可按產品種類或紅利類型篩選。",
@@ -363,7 +403,11 @@ def write_overview(ws, sheets, year, today):
     ]
     for s in tips:
         r += 1
-        text(r, s)
+        c = ws.cell(row=r, column=1, value=s)
+        c.font = Font(size=9, color=GREY)
+        c.alignment = Alignment(vertical="center", indent=1)
+        ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=ncol)
+        ws.row_dimensions[r].height = 22
 
 
 def notion_upload(path, year):
@@ -457,6 +501,8 @@ def main():
     log = {"untitled": [], "years": collections.Counter(), "tables": 0}
     sets, ycols, ysubs = parse(body, log)
     sheets = [(label, sets[label]) for label in LABELS]
+    cats = list(dict.fromkeys(x["cat"] for _, rows in sheets for x in rows if x["cat"]))
+    CAT_COLORS.update({cat: PALETTE[i % len(PALETTE)] for i, cat in enumerate(cats)})
     year = log["years"].most_common(1)[0][0] if log["years"] else str(datetime.date.today().year)
     today = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=8))).strftime("%Y-%m-%d")
 
