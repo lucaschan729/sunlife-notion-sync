@@ -43,6 +43,7 @@ SEP_BORDER = Border(bottom=Side(style="thin", color="8EA9DB"))
 CENTER = Alignment(horizontal="center", vertical="center", wrap_text=True)
 ROW_HEIGHT = 20
 HEAD_ROW = 3
+YEAR_W = 12
 XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 
@@ -163,6 +164,16 @@ def text_width(s):
     return sum(2 if ord(ch) > 0x2E7F else 1 for ch in s)
 
 
+def fit(texts, lo, hi, size=9):
+    w = max((text_width(t) for t in texts), default=0) * size / 10 + 3
+    return max(lo, min(hi, round(w, 1)))
+
+
+def wrap_lines(s, width, size=9):
+    cap = max(1.0, (width - 2) / (size / 10))
+    return sum(max(1, math.ceil(text_width(p) / cap)) for p in str(s).split("\n"))
+
+
 def head_cell(c, size=9):
     c.font = Font(bold=True, color="FFFFFF", size=size)
     c.fill = HEAD_FILL
@@ -188,7 +199,7 @@ def info_row(ws, text, ncol, height):
     ws.row_dimensions[2].height = height
 
 
-def write_averages(ws, start, label, rows, ycols, ysubs, nlead):
+def write_averages(ws, start, label, rows, ycols, ysubs, nlead, lead_w):
     last = nlead + len(ycols)
     kinds = list(dict.fromkeys(x["kind"] for x in rows))
     multi = len(kinds) > 1
@@ -216,7 +227,8 @@ def write_averages(ws, start, label, rows, ycols, ysubs, nlead):
         head_cell(ws.cell(row=r, column=nlead, value=title))
         for j, h in enumerate(heads):
             head_cell(ws.cell(row=r, column=nlead + 1 + j, value=h), 8)
-        ws.row_dimensions[r].height = 36
+        lines = max([wrap_lines(h, YEAR_W, 8) for h in heads] + [wrap_lines(title, lead_w)])
+        ws.row_dimensions[r].height = 12 * lines + 10
 
     r = start
     c = ws.cell(row=r, column=nlead, value="平均值摘要")
@@ -237,23 +249,29 @@ def write_averages(ws, start, label, rows, ycols, ysubs, nlead):
     c.font = Font(size=8, color=GREY)
     c.alignment = Alignment(vertical="center", wrap_text=True)
     ws.merge_cells(start_row=r, start_column=nlead, end_row=r, end_column=last)
-    ws.row_dimensions[r].height = 30
+    ws.row_dimensions[r].height = 12 * wrap_lines(AVG_NOTE, lead_w + YEAR_W * len(ycols), 8) + 8
 
 
 def write_sheet(ws, label, rows, ycols, ysubs, year, today):
-    cols = [("产品名称", 40, "name"), ("产品种类", 14, "cat")]
-    if len(set(r["kind"] for r in rows)) > 1:
-        cols.append(("红利类型", 18, "kind"))
+    kinds = list(dict.fromkeys(r["kind"] for r in rows))
+    multi = len(kinds) > 1
+    extras = [label, "當年平均值", "所有產品", "所有分红", "分紅類型", "平均值摘要 "]
+    name_w = fit([r["name"] for r in rows] + ["产品名称"], 18, 46)
+    cat_w = fit([r["cat"] for r in rows] + ["产品种类"] + ([] if multi else extras), 12, 24)
+    cols = [("产品名称", name_w, "name"), ("产品种类", cat_w, "cat")]
+    if multi:
+        cols.append(("红利类型", fit(kinds + ["红利类型"] + extras, 12, 24), "kind"))
     heads = [c[0] for c in cols] + [(k.replace("保單年度", "保单年度") + "\n" + ysubs.get(k, "")).strip() for k in ycols]
-    widths = [c[1] for c in cols] + [10] * len(ycols)
+    widths = [c[1] for c in cols] + [YEAR_W] * len(ycols)
     n = len(heads)
+    info = "\n".join([DEFS[label], LEGEND,
+                      f"資料來源：香港永明金融網站（報告年度 {year}）｜更新日期：{today}"])
     banner(ws, f"永明{label}（報告年度 {year}）", n, 12, 30)
-    info_row(ws, "\n".join([DEFS[label], LEGEND,
-                            f"資料來源：香港永明金融網站（報告年度 {year}）｜更新日期：{today}"]), n, 50)
+    info_row(ws, info, n, 12 * wrap_lines(info, sum(widths), 8) + 10)
     for i, (h, w) in enumerate(zip(heads, widths), 1):
         head_cell(ws.cell(row=HEAD_ROW, column=i, value=h))
         ws.column_dimensions[get_column_letter(i)].width = w
-    ws.row_dimensions[HEAD_ROW].height = 48
+    ws.row_dimensions[HEAD_ROW].height = 14 * max(wrap_lines(h, w) for h, w in zip(heads, widths)) + 10
     ri, prev = HEAD_ROW, None
     for r in rows:
         if r["name"] != prev:
@@ -295,11 +313,11 @@ def write_sheet(ws, label, rows, ycols, ysubs, year, today):
                     c.font = Font(size=9, color=DARK)
             else:
                 c.font = Font(size=9, color=LIGHT)
-        lines = max(1, math.ceil(text_width(r["name"]) / 40))
+        lines = max(wrap_lines(r[key], w) for _, w, key in cols)
         ws.row_dimensions[ri].height = max(ROW_HEIGHT, 13 * lines + 7)
     ws.freeze_panes = f"B{HEAD_ROW + 1}"
     ws.auto_filter.ref = f"A{HEAD_ROW}:{get_column_letter(n)}{max(ri, HEAD_ROW + 1)}"
-    write_averages(ws, ri + 2, label, rows, ycols, ysubs, len(cols))
+    write_averages(ws, ri + 2, label, rows, ycols, ysubs, len(cols), cols[-1][1])
     ws.sheet_view.showGridLines = False
     ws.sheet_properties.tabColor = BLUE
     ws.page_setup.orientation = "landscape"
@@ -313,7 +331,8 @@ def write_overview(ws, sheets, year, today):
     ncol = 6
     ws.sheet_view.showGridLines = False
     ws.sheet_properties.tabColor = "FFC000"
-    for i, w in enumerate([40, 20, 20, 20, 20, 20], 1):
+    first_w = fit([f"{year}{label}" for label, _ in sheets] + list(CAT_COLORS) + ["產品種類"], 22, 40, 11)
+    for i, w in enumerate([first_w, 18, 18, 18, 18, 18], 1):
         ws.column_dimensions[get_column_letter(i)].width = w
 
     def section(r, s):
@@ -407,7 +426,7 @@ def write_overview(ws, sheets, year, today):
         c.font = Font(size=9, color=GREY)
         c.alignment = Alignment(vertical="center", indent=1)
         ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=ncol)
-        ws.row_dimensions[r].height = 22
+        ws.row_dimensions[r].height = 20
 
 
 def notion_upload(path, year):
